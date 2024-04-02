@@ -3,26 +3,29 @@
 #include <string.h>
 #include <pthread.h> 
 #include <mpi.h>     
+#include <time.h>
 
 #define THREAD_NUM 3
 #define CLOCK_QUEUE_SIZE 10
 
 typedef struct {
-    int p[3];
-    int pid;
+    int p[3]; // Vetor de relógios lógicos para cada processo
+    int pid;  // Identificador do processo
 } Clock;
 
-pthread_mutex_t outputMutex;
-pthread_cond_t outputCondEmpty;
-pthread_cond_t outputCondFull;
-int outputEnqueueCount = 0;
-Clock outputEnqueue[CLOCK_QUEUE_SIZE];
+pthread_mutex_t outputMutex; // Mutex para garantir acesso exclusivo à fila de saída
+pthread_cond_t outputCondEmpty; // Condição para sinalizar que a fila de saída está vazia
+pthread_cond_t outputCondFull;  // Condição para sinalizar que a fila de saída está cheia
+int outputEnqueueCount = 0;     // Contador de elementos na fila de saída
+Clock outputEnqueue[CLOCK_QUEUE_SIZE]; // Fila de saída
 
-pthread_mutex_t inputMutex;
-pthread_cond_t inputCondEmpty;
-pthread_cond_t inputCondFull;
-int inputEnqueueCount = 0;
-Clock inputEnqueue[CLOCK_QUEUE_SIZE];
+pthread_mutex_t inputMutex;  // Mutex para garantir acesso exclusivo à fila de entrada
+pthread_cond_t inputCondEmpty; // Condição para sinalizar que a fila de entrada está vazia
+pthread_cond_t inputCondFull;  // Condição para sinalizar que a fila de entrada está cheia
+int inputEnqueueCount = 0;     // Contador de elementos na fila de entrada
+Clock inputEnqueue[CLOCK_QUEUE_SIZE]; // Fila de entrada
+
+int snapshot_done = 0; // Variável para indicar se o snapshot foi realizado
 
 void Event(int pid, Clock *clock) {
     // Incrementa o relógio lógico do processo especificado
@@ -91,22 +94,24 @@ Clock* ReceiveControl(int pid, Clock *clock) {
 
 void Send(int pid, Clock *clock){
     // Envia um relógio usando MPI
-    int mensagem[3];
+    int mensagem[4];
     mensagem[0] = clock->p[0];
     mensagem[1] = clock->p[1];
     mensagem[2] = clock->p[2];
+    mensagem[3] = snapshot_done; // marcação para indicar se snapshot já foi feito
     // MPI_SEND
-    MPI_Send(&mensagem, 3, MPI_INT, clock->pid, 0, MPI_COMM_WORLD);
+    MPI_Send(&mensagem, 4, MPI_INT, clock->pid, 0, MPI_COMM_WORLD);
 }
 
 void Receive(int pid, Clock *clock){
     // Recebe um relógio usando MPI
-    int mensagem[3];
+    int mensagem[4];
     // MPI_RECV
-    MPI_Recv(&mensagem, 3, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Recv(&mensagem, 4, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     clock->p[0] = mensagem[0];
     clock->p[1] = mensagem[1];
     clock->p[2] = mensagem[2];
+    snapshot_done = mensagem[3]; // verifica se snapshot já foi feito
 }
 
 void *MainThread(void *args) {
@@ -133,18 +138,37 @@ void *MainThread(void *args) {
         clock->pid = 1;
         SendControl(pid, clock);
         Event(pid, clock);
+        // Enviar mensagem para iniciar o snapshot
+        clock->pid = 1;
+        SendControl(pid, clock);
+        clock = ReceiveControl(pid, clock);
+        if (!snapshot_done) {
+            printf("Snapshot em processo %d:\n", pid);
+            printf("Relógio: (%d, %d, %d)\n", clock->p[0], clock->p[1], clock->p[2]);
+            snapshot_done = 1; // marca que snapshot foi feito
+        }
     } else if (pid == 1) {
         // Processo 1
         clock->pid = 0;
         SendControl(pid, clock);
         clock = ReceiveControl(pid, clock);
         clock = ReceiveControl(pid, clock);
+        if (!snapshot_done) {
+            printf("Snapshot em processo %d:\n", pid);
+            printf("Relógio: (%d, %d, %d)\n", clock->p[0], clock->p[1], clock->p[2]);
+            snapshot_done = 1; // marca que snapshot foi feito
+        }
     } else if (pid == 2) {
         // Processo 2
         Event(pid, clock);
         clock->pid = 0;
         SendControl(pid, clock);
         clock = ReceiveControl(pid, clock);
+        if (!snapshot_done) {
+            printf("Snapshot em processo %d:\n", pid);
+            printf("Relógio: (%d, %d, %d)\n", clock->p[0], clock->p[1], clock->p[2]);
+            snapshot_done = 1; // marca que snapshot foi feito
+        }
     }
 
     return NULL;
@@ -221,6 +245,8 @@ void process2(){
 int main(int argc, char* argv[]) {
     // Função principal do programa
     int my_rank;
+    
+    srand(time(NULL)); // Inicializar o gerador de números aleatórios
     
     pthread_mutex_init(&inputMutex, NULL);
     pthread_mutex_init(&outputMutex, NULL);
