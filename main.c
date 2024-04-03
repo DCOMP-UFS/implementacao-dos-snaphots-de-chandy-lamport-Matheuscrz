@@ -11,6 +11,8 @@
 typedef struct {
     int p[3]; // Vetor de relógios lógicos para cada processo
     int pid;  // Identificador do processo
+    int snapshot[3]; // Estado do snapshot
+    int snapshot_done; // Indica se o snapshot foi realizado
 } Clock;
 typedef struct {
     pthread_mutex_t mutex;
@@ -83,7 +85,28 @@ Clock* ReceiveControl(int pid, Clock *clock) {
     }
     temp->p[pid]++;
     printf("Processo: %d, Relógio: (%d, %d, %d)\n", pid, clock->p[0], clock->p[1], clock->p[2]);
+
+    // Se uma mensagem de snapshot foi recebida e um snapshot ainda não foi realizado, inicie o snapshot
+    if (received.snapshot_done && !temp->snapshot_done) {
+        Snapshot(temp);
+    }
+
     return temp;
+}
+
+void Snapshot(Clock *clock) {
+    // Salva o estado do relógio
+    for (int i = 0; i < 3; i++) {
+        clock->snapshot[i] = clock->p[i];
+    }
+    clock->snapshot_done = 1;
+
+    // Envia uma mensagem para todos os outros processos para iniciar o snapshot
+    for (int i = 0; i < 3; i++) {
+        if (i != clock->pid) {
+            SendControl(i, clock);
+        }
+    }
 }
 
 void Send(int pid, Clock *clock){
@@ -201,6 +224,11 @@ void process0(){
     pthread_create(&thread[1], NULL, &SendThread, (void*) 0);
     pthread_create(&thread[2], NULL, &ReceiveThread, (void*) 0);
 
+    // Inicia um snapshot de forma aleatória
+    if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
+        Snapshot(&clock0);
+    }
+
     for (int i = 0; i < THREAD_NUM; i++){  
         if (pthread_join(thread[i], NULL) != 0) {
             perror("Falha ao juntar a thread");
@@ -248,19 +276,31 @@ int main() {
     pthread_cond_init(&outputQueue.condEmpty, NULL);
     pthread_cond_init(&inputQueue.condFull, NULL);
     pthread_cond_init(&outputQueue.condFull, NULL);
-    inputQueue.count = 0;
-    outputQueue.count = 0;
+    inputQueue.enqueueCount = 0;
+    outputQueue.enqueueCount = 0;
 
     MPI_Init(NULL, NULL); 
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank); 
 
     if (my_rank == 0) { 
         process0();
+        if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
+            Snapshot(&clock0);
+        }
     } else if (my_rank == 1) {  
         process1();
+        if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
+            Snapshot(&clock1);
+        }
     } else if (my_rank == 2) {  
         process2();
+        if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
+            Snapshot(&clock2);
+        }
     }
+
+    // Imprime o estado do snapshot de cada processo
+    printf("Snapshot do processo %d: (%d, %d, %d)\n", my_rank, clock.p[0], clock.p[1], clock.p[2]);
 
     // Destruir as filas de entrada e saída
     pthread_mutex_destroy(&inputQueue.mutex);
