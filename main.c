@@ -12,18 +12,16 @@ typedef struct {
     int p[3]; // Vetor de relógios lógicos para cada processo
     int pid;  // Identificador do processo
 } Clock;
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t condEmpty;
+    pthread_cond_t condFull;
+    int count;
+    Clock queue[CLOCK_QUEUE_SIZE];
+} Queue;
 
-pthread_mutex_t outputMutex; // Mutex para garantir acesso exclusivo à fila de saída
-pthread_cond_t outputCondEmpty; // Condição para sinalizar que a fila de saída está vazia
-pthread_cond_t outputCondFull;  // Condição para sinalizar que a fila de saída está cheia
-int outputEnqueueCount = 0;     // Contador de elementos na fila de saída
-Clock outputEnqueue[CLOCK_QUEUE_SIZE]; // Fila de saída
-
-pthread_mutex_t inputMutex;  // Mutex para garantir acesso exclusivo à fila de entrada
-pthread_cond_t inputCondEmpty; // Condição para sinalizar que a fila de entrada está vazia
-pthread_cond_t inputCondFull;  // Condição para sinalizar que a fila de entrada está cheia
-int inputEnqueueCount = 0;     // Contador de elementos na fila de entrada
-Clock inputEnqueue[CLOCK_QUEUE_SIZE]; // Fila de entrada
+Queue inputQueue;
+Queue outputQueue;
 
 int snapshot_done = 0; // Variável para indicar se o snapshot foi realizado
 
@@ -33,55 +31,51 @@ void Event(int pid, Clock *clock) {
     printf("Processo: %d, Relógio: (%d, %d, %d)\n", pid, clock->p[0], clock->p[1], clock->p[2]);
 }
 
-Clock dequeue(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clockQueue) {
-    // Obtém um relógio da fila
-    Clock clock;
-    pthread_mutex_lock(mutex);
-    
-    while (*clockCount == 0) {
-        pthread_cond_wait(condEmpty, mutex);
+Clock dequeue(Queue *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->count == 0) {
+        pthread_cond_wait(&queue->condEmpty, &queue->mutex);
     }
 
-    clock = clockQueue[0];
+    Clock clock = queue->queue[0];
 
-    for (int i = 0; i < *clockCount - 1; i++) {
-        clockQueue[i] = clockQueue[i + 1];
+    for (int i = 0; i < queue->count - 1; i++) {
+        queue->queue[i] = queue->queue[i + 1];
     }
 
-    (*clockCount)--;
-    
-    pthread_mutex_unlock(mutex);
-    pthread_cond_signal(condFull);
-    
+    queue->count--;
+
+    pthread_cond_signal(&queue->condFull);
+    pthread_mutex_unlock(&queue->mutex);
+
     return clock;
 }
 
-void enqueue(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock clock, Clock *clockQueue) {
-    // Insere um relógio na fila
-    pthread_mutex_lock(mutex);
+void enqueue(Queue *queue, Clock clock) {
+    pthread_mutex_lock(&queue->mutex);
 
-    while (*clockCount == CLOCK_QUEUE_SIZE) {
-        pthread_cond_wait(condFull, mutex);
+    while (queue->count == CLOCK_QUEUE_SIZE) {
+        pthread_cond_wait(&queue->condFull, &queue->mutex);
     }
     
-    Clock temp = clock;
-    clockQueue[*clockCount] = temp;
-    (*clockCount)++;
-    
-    pthread_mutex_unlock(mutex);
-    pthread_cond_signal(condEmpty);
+    queue->queue[queue->count] = clock;
+    queue->count++;
+
+    pthread_cond_signal(&queue->condEmpty);
+    pthread_mutex_unlock(&queue->mutex);
 }
 
 void SendControl(int pid, Clock *clock) {
     // Envia um relógio ao processo especificado
     Event(pid, clock);
-    enqueue(&outputMutex, &outputCondEmpty, &outputCondFull, &outputEnqueueCount, *clock, outputEnqueue);
+    enqueue(&outputQueue, *clock);
 }
 
 Clock* ReceiveControl(int pid, Clock *clock) {
     // Recebe um relógio do processo especificado
     Clock* temp = clock;
-    Clock received = dequeue(&inputMutex, &inputCondEmpty, &inputCondFull, &inputEnqueueCount, inputEnqueue);
+    Clock received = dequeue(&inputQueue);
     for (int i = 0; i < 3; i++) {
         if (temp->p[i] < received.p[i]) {
             temp->p[i] = received.p[i];
@@ -180,7 +174,7 @@ void *SendThread(void *args) {
     Clock clock;
     
     while(1){
-      clock = dequeue(&outputMutex, &outputCondEmpty, &outputCondFull, &outputEnqueueCount, outputEnqueue);
+      clock = dequeue(&outputQueue);
       Send(pid, &clock);
     }
 
@@ -194,7 +188,7 @@ void *ReceiveThread(void *args) {
 
     while(1){
       Receive(pid, &clock);
-      enqueue(&inputMutex, &inputCondEmpty, &inputCondFull, &inputEnqueueCount, clock, inputEnqueue);
+      enqueue(&inputQueue, clock);
     }
  
     return NULL;
@@ -242,19 +236,21 @@ void process2(){
     }
 }
 
-int main(int argc, char* argv[]) {
-    // Função principal do programa
+int main() {
     int my_rank;
     
     srand(time(NULL)); // Inicializar o gerador de números aleatórios
     
-    pthread_mutex_init(&inputMutex, NULL);
-    pthread_mutex_init(&outputMutex, NULL);
-    pthread_cond_init(&inputCondEmpty, NULL);
-    pthread_cond_init(&outputCondEmpty, NULL);
-    pthread_cond_init(&inputCondFull, NULL);
-    pthread_cond_init(&outputCondFull, NULL);
-    
+    // Inicializar as filas de entrada e saída
+    pthread_mutex_init(&inputQueue.mutex, NULL);
+    pthread_mutex_init(&outputQueue.mutex, NULL);
+    pthread_cond_init(&inputQueue.condEmpty, NULL);
+    pthread_cond_init(&outputQueue.condEmpty, NULL);
+    pthread_cond_init(&inputQueue.condFull, NULL);
+    pthread_cond_init(&outputQueue.condFull, NULL);
+    inputQueue.count = 0;
+    outputQueue.count = 0;
+
     MPI_Init(NULL, NULL); 
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank); 
 
@@ -266,12 +262,13 @@ int main(int argc, char* argv[]) {
         process2();
     }
 
-    pthread_mutex_destroy(&inputMutex);
-    pthread_mutex_destroy(&outputMutex);
-    pthread_cond_destroy(&inputCondEmpty);
-    pthread_cond_destroy(&outputCondEmpty);
-    pthread_cond_destroy(&inputCondFull);
-    pthread_cond_destroy(&outputCondFull);
+    // Destruir as filas de entrada e saída
+    pthread_mutex_destroy(&inputQueue.mutex);
+    pthread_mutex_destroy(&outputQueue.mutex);
+    pthread_cond_destroy(&inputQueue.condEmpty);
+    pthread_cond_destroy(&outputQueue.condEmpty);
+    pthread_cond_destroy(&inputQueue.condFull);
+    pthread_cond_destroy(&outputQueue.condFull);
     
     MPI_Finalize();
 
