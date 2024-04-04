@@ -14,7 +14,7 @@ typedef struct {
     int snapshot[3]; // Estado do snapshot
     int snapshot_done; // Indica se o snapshot foi realizado
 } Clock;
-typedef struct {
+typedef struct {    
     pthread_mutex_t mutex;
     pthread_cond_t condEmpty;
     pthread_cond_t condFull;
@@ -26,6 +26,8 @@ Queue inputQueue;
 Queue outputQueue;
 
 int snapshot_done = 0; // Variável para indicar se o snapshot foi realizado
+
+void Snapshot(Clock *clock);
 
 void Event(int pid, Clock *clock) {
     // Incrementa o relógio lógico do processo especificado
@@ -218,6 +220,7 @@ void *ReceiveThread(void *args) {
 }
 
 void process0(){
+    Clock clock0;
     // Processo de rank 0
     pthread_t thread[THREAD_NUM];
     pthread_create(&thread[0], NULL, &MainThread, (void*) 0);
@@ -227,6 +230,8 @@ void process0(){
     // Inicia um snapshot de forma aleatória
     if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
         Snapshot(&clock0);
+        // Imprime o estado do snapshot do processo
+        printf("Snapshot do processo 0: (%d, %d, %d)\n", clock0.p[0], clock0.p[1], clock0.p[2]);
     }
 
     for (int i = 0; i < THREAD_NUM; i++){  
@@ -237,12 +242,20 @@ void process0(){
 }
 
 void process1(){
+    Clock clock1;
     // Processo de rank 1
     pthread_t thread[THREAD_NUM];
     pthread_create(&thread[0], NULL, &MainThread, (void*) 1);
     pthread_create(&thread[1], NULL, &SendThread, (void*) 1);
     pthread_create(&thread[2], NULL, &ReceiveThread, (void*) 1);
     
+    // Inicia um snapshot de forma aleatória
+    if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
+        Snapshot(&clock1);
+        // Imprime o estado do snapshot do processo
+        printf("Snapshot do processo 1: (%d, %d, %d)\n", clock1.p[0], clock1.p[1], clock1.p[2]);
+    }
+
     for (int i = 0; i < THREAD_NUM; i++){  
         if (pthread_join(thread[i], NULL) != 0) {
             perror("Falha ao juntar a thread");
@@ -251,12 +264,20 @@ void process1(){
 }
 
 void process2(){
+    Clock clock2;
     // Processo de rank 2
     pthread_t thread[THREAD_NUM];
     pthread_create(&thread[0], NULL, &MainThread, (void*) 2);
     pthread_create(&thread[1], NULL, &SendThread, (void*) 2);
     pthread_create(&thread[2], NULL, &ReceiveThread, (void*) 2);
     
+    // Inicia um snapshot de forma aleatória
+    if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
+        Snapshot(&clock2);
+        // Imprime o estado do snapshot do processo
+        printf("Snapshot do processo 2: (%d, %d, %d)\n", clock2.p[0], clock2.p[1], clock2.p[2]);
+    }
+
     for (int i = 0; i < THREAD_NUM; i++){  
         if (pthread_join(thread[i], NULL) != 0) {
             perror("Falha ao juntar a thread");
@@ -276,31 +297,19 @@ int main() {
     pthread_cond_init(&outputQueue.condEmpty, NULL);
     pthread_cond_init(&inputQueue.condFull, NULL);
     pthread_cond_init(&outputQueue.condFull, NULL);
-    inputQueue.enqueueCount = 0;
-    outputQueue.enqueueCount = 0;
+    inputQueue.count = 0;
+    outputQueue.count = 0;
 
     MPI_Init(NULL, NULL); 
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank); 
 
     if (my_rank == 0) { 
         process0();
-        if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
-            Snapshot(&clock0);
-        }
     } else if (my_rank == 1) {  
         process1();
-        if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
-            Snapshot(&clock1);
-        }
     } else if (my_rank == 2) {  
         process2();
-        if (rand() % 10 < 5) { // 50% de chance de iniciar um snapshot
-            Snapshot(&clock2);
-        }
     }
-
-    // Imprime o estado do snapshot de cada processo
-    printf("Snapshot do processo %d: (%d, %d, %d)\n", my_rank, clock.p[0], clock.p[1], clock.p[2]);
 
     // Destruir as filas de entrada e saída
     pthread_mutex_destroy(&inputQueue.mutex);
